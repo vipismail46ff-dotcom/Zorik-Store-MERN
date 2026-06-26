@@ -2,6 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 require('dotenv').config();
+
 const multer = require('multer');
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const cloudinary = require('cloudinary').v2;
@@ -17,7 +18,38 @@ app.use(express.json());
 app.use('/api/products', productRoutes);
 
 // ==================================================================
-// 🛡️ NEW: Admin Master PIN Verification API
+// 1. CLOUDINARY & MULTER CONFIG (கண்டிப்பாக இதுதான் முதலில் இருக்க வேண்டும்)
+// ==================================================================
+cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
+const storage = new CloudinaryStorage({
+    cloudinary: cloudinary,
+    params: {
+        folder: 'zorik_products',
+        allowed_formats: ['jpg', 'jpeg', 'png', 'webp']
+    }
+});
+
+const upload = multer({ storage: storage }); // <-- எஞ்சின் இங்கே உருவாக்கப்படுகிறது
+
+// ==================================================================
+// 2. IMAGE UPLOAD ROUTE (உருவாக்கிய எஞ்சினை இப்போது பயன்படுத்துகிறோம்)
+// ==================================================================
+app.post('/api/upload', upload.single('image'), (req, res) => {
+    try {
+        res.json({ imageUrl: req.file.path });
+    } catch (error) {
+        console.error("Upload Error:", error);
+        res.status(500).json({ error: 'Image upload failed!' });
+    }
+});
+
+// ==================================================================
+// 3. ADMIN & ORDERS ROUTES
 // ==================================================================
 app.post('/api/admin/verify', (req, res) => {
     const { pin } = req.body;
@@ -50,40 +82,14 @@ app.post('/api/orders', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
-// --- IMAGE UPLOAD API ---
-app.post('/api/upload', upload.single('image'), (req, res) => {
-    try {
-        // Cloudinary-ல் படம் சேவ் ஆனதும், அதற்கான URL-ஐ React-க்கு அனுப்புகிறோம்
-        res.json({ imageUrl: req.file.path });
-    } catch (error) {
-        console.error("Upload Error:", error);
-        res.status(500).json({ error: 'Image upload failed!' });
-    }
-});
 
 app.get('/', (req, res) => {
-    res.send("Zorik E-Commerce Backend is Running!");
+    res.send("Zorik E-Commerce Backend is Running Live!");
 });
 
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('🟩 MongoDB Connected Successfully!'))
     .catch((err) => console.log('❌ MongoDB Connection Error:', err));
-// --- CLOUDINARY & MULTER CONFIGURATION ---
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
-const storage = new CloudinaryStorage({
-    cloudinary: cloudinary,
-    params: {
-        folder: 'zorik_products', // Cloudinary-ல் இந்த பெயரில் ஒரு போல்டர் உருவாகும்
-        allowed_formats: ['jpg', 'jpeg', 'png', 'webp']
-    }
-});
-
-const upload = multer({ storage: storage });
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
