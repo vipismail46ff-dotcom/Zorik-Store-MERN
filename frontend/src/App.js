@@ -34,7 +34,6 @@ function App() {
   const fetchProducts = async () => {
     try {
       setLoading(true);
-      // LIVE CLOUDINARY & RENDER CONNECTED
       const response = await axios.get('https://zorik-backend-api.onrender.com/api/products');
       if (Array.isArray(response.data)) setProducts(response.data);
     } catch (err) {
@@ -139,11 +138,18 @@ function App() {
 
       const secureCloudUrl = uploadRes.data.imageUrl;
 
+      // =================================================================
+      // 🎯 THE MASTER FIX: டேட்டாபேஸ் கேட்கும் விதிகளை இங்கே திருப்திப்படுத்துகிறோம்!
+      // =================================================================
       const productData = {
         name: newStock.name,
         price: Number(newStock.price),
         description: newStock.description || "Premium Zorik Luxury Fit",
-        imageUrl: secureCloudUrl
+        imageUrl: secureCloudUrl,
+        category: "Zorik Exclusive",          // <-- விதி 1 Satisfied
+        countInStock: 50,                     // <-- விதி 2 Satisfied
+        sizes: ['S', 'M', 'L', 'XL'],         // <-- விதி 3 Satisfied
+        colors: ['Midnight Black', 'White']   // <-- விதி 4 Satisfied
       };
 
       await axios.post('https://zorik-backend-api.onrender.com/api/products', productData);
