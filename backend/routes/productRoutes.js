@@ -31,5 +31,27 @@ router.delete('/:id', async (req, res) => {
         res.status(500).json({ success: false, error: err.message });
     }
 });
+// 🎯 UPDATE ORDER STATUS (For Cycle Button)
+router.put('/:id', async (req, res) => {
+    try {
+        const updatedOrder = await Order.findByIdAndUpdate(
+            req.params.id,
+            { status: req.body.status },
+            { new: true }
+        );
+        res.status(200).json(updatedOrder);
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
+// 🎯 DELETE ORDER (For Bin / Permanent Delete)
+router.delete('/:id', async (req, res) => {
+    try {
+        await Order.findByIdAndDelete(req.params.id);
+        res.status(200).json({ success: true, message: "Order deleted permanently" });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 module.exports = router;
