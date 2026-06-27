@@ -22,5 +22,14 @@ router.post('/', async (req, res) => {
         res.status(400).json({ message: "பொருளைச் சேர்ப்பதில் பிழை ஏற்பட்டது" });
     }
 });
+// 🎯 DELETE ROUTE FOR PRODUCTS
+router.delete('/:id', async (req, res) => {
+    try {
+        await Product.findByIdAndDelete(req.params.id);
+        res.status(200).json({ success: true, message: "Product deleted permanently" });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
 
 module.exports = router;
