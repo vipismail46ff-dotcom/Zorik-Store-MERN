@@ -1,256 +1,148 @@
-// Zorik V5 Amazon Killer Activated
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
 function App() {
   const [products, setProducts] = useState([]);
-  const [cart, setCart] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
 
+  // 🎯 FIX 1: Cart Saves to LocalStorage (Won't clear on refresh!)
+  const [cart, setCart] = useState(() => {
+    const saved = localStorage.getItem('zorik_cart');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  const [loading, setLoading] = useState(true);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isCheckoutOpen, setIsCheckoutOpen] = useState(false);
   const [customer, setCustomer] = useState({ name: '', phone: '', address: '' });
-
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [adminOrders, setAdminOrders] = useState([]);
-  const [adminLoading, setAdminLoading] = useState(false);
-
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
   const [toast, setToast] = useState({ show: false, text: '', icon: '' });
-  const [celebration, setCelebration] = useState({ show: false, orderId: '' });
 
-  const [isAdminUnlocked, setIsAdminUnlocked] = useState(() => {
-    return localStorage.getItem('zorik_boss_unlocked') === 'true';
-  });
+  const [isAdminUnlocked, setIsAdminUnlocked] = useState(() => localStorage.getItem('zorik_boss_unlocked') === 'true');
   const [pinInput, setPinInput] = useState('');
-  const [pinError, setPinError] = useState('');
+  const [adminTab, setAdminTab] = useState('inventory');
 
-  const [adminTab, setAdminTab] = useState('inventory'); // 🎯 Default opened to inventory
-  const [selectedFile, setSelectedFile] = useState(null);
-
+  // 🎯 FIX 2: Multiple Images & Highlights for Amazon Style
+  const [selectedFiles, setSelectedFiles] = useState([]);
   const [newStock, setNewStock] = useState({
-    name: '', price: '', description: '', gender: 'Men', category: 'T-Shirt', countInStock: '25', sizes: []
+    name: '', price: '', description: '', gender: 'Men', category: 'T-Shirt', countInStock: '25', sizes: [], highlights: ['']
   });
   const [isUploading, setIsUploading] = useState(false);
-  const [selectedSizes, setSelectedSizes] = useState({});
 
-  // =================================================================
-  // 🌟 UPDATE: V4 SPECIAL STATE FOR EDIT MODAL & 15s UNDO MACHINE
-  // =================================================================
-  const [editingProduct, setEditingProduct] = useState(null);
-  const [pendingDeleteProduct, setPendingDeleteProduct] = useState(null);
+  // 🎯 FIX 3: Product Detail Modal
+  const [selectedProduct, setSelectedProduct] = useState(null);
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
+  const [selectedSizeForProduct, setSelectedSizeForProduct] = useState("");
+
   const deleteTimerRef = useRef(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
+
+  useEffect(() => {
+    localStorage.setItem('zorik_cart', JSON.stringify(cart));
+  }, [cart]);
 
   const fetchProducts = async () => {
     try {
       setLoading(true);
       const response = await axios.get('https://zorik-backend-api.onrender.com/api/products');
       if (Array.isArray(response.data)) setProducts(response.data.reverse());
-    } catch (err) {
-      setError(err.message || "Could not connect to Server.");
-    } finally {
-      setLoading(false);
-    }
+    } catch (err) { } finally { setLoading(false); }
   };
 
-  useEffect(() => {
-    fetchProducts();
-  }, []);
+  useEffect(() => { fetchProducts(); }, []);
 
   const triggerToast = (text, icon = '🛍️') => {
     setToast({ show: true, text, icon });
     setTimeout(() => setToast({ show: false, text: '', icon: '' }), 3000);
   };
 
-  const addToCart = (product) => {
-    if (product.countInStock <= 0) return alert("🚫 Sorry! This item is completely Sold Out.");
+  const parseProductData = (prod) => {
+    try {
+      if (prod.description && prod.description.startsWith('{')) {
+        const parsed = JSON.parse(prod.description);
+        return { ...prod, richText: parsed.text, images: parsed.images || [prod.imageUrl], highlights: parsed.highlights || [] };
+      }
+    } catch (e) { }
+    return { ...prod, richText: prod.description, images: [prod.imageUrl], highlights: [] };
+  };
 
-    const chosenSize = selectedSizes[product._id];
-    if (product.sizes && product.sizes.length > 0 && !chosenSize) {
-      alert("⚠️ Please select your Size first!");
-      return;
-    }
-    const cartItem = { ...product, selectedSize: chosenSize || 'Standard', cartId: Math.random() };
+  const handleAddToCart = (product, size) => {
+    if (product.countInStock <= 0) return alert("🚫 Sorry! Sold Out.");
+    if (product.sizes && product.sizes.length > 0 && !size) return alert("⚠️ Please select your Size first!");
+
+    const cartItem = { ...product, selectedSize: size || 'Standard', cartId: Math.random() };
     setCart([...cart, cartItem]);
-    triggerToast(`Added "${product.name}" (Size: ${cartItem.selectedSize})`, '🛒');
+    triggerToast(`Added "${product.name}" to cart!`, '🛒');
   };
 
-  const removeFromCart = (cartIdToRemove) => {
-    setCart(cart.filter((item) => item.cartId !== cartIdToRemove));
-    triggerToast("Item removed from cart", '🗑️');
+  const handleBuyNow = (product, size) => {
+    if (product.sizes && product.sizes.length > 0 && !size) return alert("⚠️ Please select your Size first!");
+    handleAddToCart(product, size);
+    setSelectedProduct(null);
+    setIsCheckoutOpen(true);
   };
-
-  const cartTotal = cart.reduce((total, item) => total + Number(item.price || 0), 0);
 
   const handleConfirmOrder = async (e) => {
     e.preventDefault();
     const randomOrderId = "ZK" + Math.floor(100000 + Math.random() * 900000);
+    const cartTotal = cart.reduce((sum, item) => sum + Number(item.price), 0);
     const orderData = { orderId: randomOrderId, customerName: customer.name, phone: customer.phone, address: customer.address, items: cart, totalAmount: cartTotal, status: 'Pending ⏳' };
 
     try {
       await axios.post('https://zorik-backend-api.onrender.com/api/orders', orderData);
-
-      const updatedProducts = products.map(p => {
-        const orderedCount = cart.filter(c => c._id === p._id).length;
-        if (orderedCount > 0) {
-          const newBalance = Math.max(0, Number(p.countInStock) - orderedCount);
-          axios.put(`https://zorik-backend-api.onrender.com/api/products/${p._id}`, { countInStock: newBalance }).catch(() => { });
-          return { ...p, countInStock: newBalance };
-        }
-        return p;
-      });
-      setProducts(updatedProducts);
-
-      setCelebration({ show: true, orderId: randomOrderId });
       setCart([]); setIsCheckoutOpen(false); setCustomer({ name: '', phone: '', address: '' });
-      setSelectedSizes({});
-    } catch (err) {
-      alert("Error placing order! Check console.");
-    }
+      triggerToast("Order Placed Successfully! 🎉", "✅");
+      fetchProducts();
+    } catch (err) { alert("Error placing order!"); }
   };
 
-  const handleOpenAdminClick = async () => {
-    setIsAdminOpen(true);
-    if (isAdminUnlocked) fetchAdminOrders();
-  };
-
-  const fetchAdminOrders = async () => {
-    setAdminLoading(true);
-    try {
-      const response = await axios.get('https://zorik-backend-api.onrender.com/api/orders');
-      setAdminOrders(response.data.reverse());
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setAdminLoading(false);
-    }
-  };
-
-  const toggleOrderStatus = async (orderId, currentStatus) => {
-    const newStatus = currentStatus && currentStatus.includes('Pending') ? 'Finished ✅' : 'Pending ⏳';
-    setAdminOrders(adminOrders.map(ord => ord._id === orderId ? { ...ord, status: newStatus } : ord));
-    triggerToast(`Order status updated!`, "📦");
-    axios.put(`https://zorik-backend-api.onrender.com/api/orders/${orderId}`, { status: newStatus }).catch(() => { });
-  };
-
-  const deleteOrder = async (orderId) => {
-    if (!window.confirm("⚠️ Are you sure you want to permanently DELETE this customer order?")) return;
-    setAdminOrders(adminOrders.filter(o => o._id !== orderId));
-    triggerToast("Order deleted permanently", "🗑️");
-    axios.delete(`https://zorik-backend-api.onrender.com/api/orders/${orderId}`).catch(() => { });
-  };
-
-  // =================================================================
-  // 🎯 V4 CORE LOGIC: DELETE WITH 15-SECOND UNDO TIMER
-  // =================================================================
   const handleDeleteStockClick = (prod) => {
-    // 1. Instant optimistic UI removal
     setProducts(prev => prev.filter(p => p._id !== prod._id));
-
     if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
-    setPendingDeleteProduct(prod);
+    setPendingDeleteId(prod._id);
 
-    // 2. Set 15s bomb to permanently delete in cloud
     deleteTimerRef.current = setTimeout(async () => {
-      try {
-        await axios.delete(`https://zorik-backend-api.onrender.com/api/products/${prod._id}`);
-      } catch (err) {
-        console.error("DB Permanence failed", err);
-      } finally {
-        setPendingDeleteProduct(null);
-      }
-    }, 15000);
-  };
-
-  const handleUndoStockDelete = () => {
-    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
-    if (pendingDeleteProduct) {
-      setProducts(prev => [pendingDeleteProduct, ...prev]);
-      triggerToast(`Restored "${pendingDeleteProduct.name}" back to live store!`, "🔄");
-      setPendingDeleteProduct(null);
-    }
-  };
-
-  const handleUpdateStockSubmit = async (e) => {
-    e.preventDefault();
-    try {
-      await axios.put(`https://zorik-backend-api.onrender.com/api/products/${editingProduct._id}`, editingProduct);
-      setProducts(products.map(p => p._id === editingProduct._id ? editingProduct : p));
-      triggerToast("Product updated live!", "✨");
-      setEditingProduct(null);
-    } catch (err) {
-      alert("Failed to update product!");
-    }
-  };
-
-  const handlePinSubmit = async (e) => {
-    e.preventDefault();
-    try {
-      const res = await axios.post('https://zorik-backend-api.onrender.com/api/admin/verify', { pin: pinInput });
-      if (res.data.success) {
-        setIsAdminUnlocked(true); localStorage.setItem('zorik_boss_unlocked', 'true');
-        setPinError(''); setPinInput('');
-        triggerToast("Zorik HQ Unlocked 🔓", "🛡️");
-        fetchAdminOrders();
-      }
-    } catch (err) {
-      setPinError("❌ Invalid Master PIN!"); setPinInput('');
-    }
-  };
-
-  const handleAdminLogout = () => {
-    localStorage.removeItem('zorik_boss_unlocked'); setIsAdminUnlocked(false);
-    triggerToast("HQ Locked Securely", "🔒");
-  };
-
-  const getDynamicSizes = (category) => {
-    if (['Shoes'].includes(category)) return ['UK 6', 'UK 7', 'UK 8', 'UK 9', 'UK 10', 'UK 11'];
-    if (['Pants', 'Track Pants', 'Shorts', 'Jeans'].includes(category)) return ['28', '30', '32', '34', '36', '38'];
-    if (['Belt', 'Accessories'].includes(category)) return ['Free Size', '32', '34', '36'];
-    return ['S', 'M', 'L', 'XL', 'XXL'];
-  };
-
-  const handleSizeCheckboxToggle = (size) => {
-    setNewStock((prev) => {
-      const updatedSizes = prev.sizes.includes(size) ? prev.sizes.filter((s) => s !== size) : [...prev.sizes, size];
-      return { ...prev, sizes: updatedSizes };
-    });
+      try { await axios.delete(`https://zorik-backend-api.onrender.com/api/products/${prod._id}`); } catch (err) { }
+      setPendingDeleteId(null);
+    }, 4000);
   };
 
   const handleAddStockSubmit = async (e) => {
     e.preventDefault();
-    if (!selectedFile) return alert("Please choose a product image from your Gallery!");
+    if (selectedFiles.length === 0) return alert("Please select at least 1 image!");
     if (newStock.sizes.length === 0) return alert("Please select at least one available size!");
 
     setIsUploading(true);
-    triggerToast("Uploading image to Cloudinary... ☁️", "⏳");
+    triggerToast("Uploading multiple images to Cloud... ☁️", "⏳");
 
     try {
-      const formData = new FormData();
-      formData.append('image', selectedFile);
-      const uploadRes = await axios.post('https://zorik-backend-api.onrender.com/api/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+      const uploadedUrls = [];
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const formData = new FormData();
+        formData.append('image', selectedFiles[i]);
+        const res = await axios.post('https://zorik-backend-api.onrender.com/api/upload', formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+        uploadedUrls.push(res.data.imageUrl);
+      }
+
+      const richDescription = JSON.stringify({
+        text: newStock.description,
+        images: uploadedUrls,
+        highlights: newStock.highlights.filter(h => h.trim() !== '')
+      });
 
       const productData = {
-        name: newStock.name,
-        price: Number(newStock.price),
-        description: newStock.description || "Premium Zorik Fit",
-        imageUrl: uploadRes.data.imageUrl,
-        category: `${newStock.gender} | ${newStock.category}`,
-        countInStock: Number(newStock.countInStock || 0),
-        sizes: newStock.sizes,
-        colors: ['Standard']
+        name: newStock.name, price: Number(newStock.price), description: richDescription,
+        imageUrl: uploadedUrls[0], category: `${newStock.gender} | ${newStock.category}`,
+        countInStock: Number(newStock.countInStock || 0), sizes: newStock.sizes, colors: ['Standard']
       };
 
       await axios.post('https://zorik-backend-api.onrender.com/api/products', productData);
-      triggerToast("✨ New Stock Published!", "📦");
-      setNewStock({ name: '', price: '', description: '', gender: 'Men', category: 'T-Shirt', countInStock: '25', sizes: [] });
-      setSelectedFile(null); setIsUploading(false);
-      fetchProducts();
-    } catch (err) {
-      alert("Failed to upload stock!"); setIsUploading(false);
-    }
+      triggerToast("✨ Amazon-Style Product Published!", "📦");
+      setNewStock({ name: '', price: '', description: '', gender: 'Men', category: 'T-Shirt', countInStock: '25', sizes: [], highlights: [''] });
+      setSelectedFiles([]); setIsUploading(false); fetchProducts();
+    } catch (err) { alert("Failed to upload stock!"); setIsUploading(false); }
   };
 
   const filteredProducts = products.filter((product) => {
@@ -259,37 +151,25 @@ function App() {
     return matchesSearch && matchesCategory;
   });
 
-  const totalRevenue = adminOrders.reduce((sum, ord) => sum + (ord.totalAmount || 0), 0);
-  const pendingCount = adminOrders.filter(o => !o.status || o.status.includes('Pending')).length;
-
   return (
     <div style={{ fontFamily: 'sans-serif', backgroundColor: '#f4f6f8', minHeight: '100vh', paddingBottom: '70px', margin: 0 }}>
 
-      <header style={{ position: 'sticky', top: 0, zIndex: 1000, backgroundColor: 'rgba(15, 15, 15, 0.92)', backdropFilter: 'blur(12px)', WebkitBackdropFilter: 'blur(12px)', padding: '14px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 4px 25px rgba(0,0,0,0.18)' }}>
+      <header style={{ position: 'sticky', top: 0, zIndex: 1000, backgroundColor: 'rgba(15, 15, 15, 0.92)', backdropFilter: 'blur(12px)', padding: '14px 20px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', boxShadow: '0 4px 25px rgba(0,0,0,0.18)' }}>
         <div onClick={() => { setSearchQuery(''); setActiveFilter('All'); }} style={{ cursor: 'pointer' }}>
           <span style={{ fontSize: '1.6rem', fontWeight: '900', letterSpacing: '2.5px', background: 'linear-gradient(45deg, #ffffff, #00ffcc)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>ZORIK.</span>
         </div>
-
         <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
-          <button onClick={() => setActiveFilter('All')} style={{ background: 'none', border: 'none', color: '#e0e0e0', fontWeight: 'bold', fontSize: '0.95rem', cursor: 'pointer' }}>Shop</button>
-
-          <button onClick={() => setIsCartOpen(true)} style={{ backgroundColor: '#222', border: '1px solid #333', padding: '8px 15px', borderRadius: '25px', color: '#00ffcc', fontWeight: '800', fontSize: '0.85rem', display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
-            🛒 Cart <span style={{ backgroundColor: '#00ffcc', color: '#111', borderRadius: '50%', padding: '1px 7px', fontSize: '0.75rem', fontWeight: '900' }}>{cart.length}</span>
+          <button onClick={() => setIsCartOpen(true)} style={{ backgroundColor: '#222', border: '1px solid #333', padding: '8px 15px', borderRadius: '25px', color: '#00ffcc', fontWeight: '800', cursor: 'pointer' }}>
+            🛒 Cart <span style={{ backgroundColor: '#00ffcc', color: '#111', borderRadius: '50%', padding: '1px 7px', fontSize: '0.75rem' }}>{cart.length}</span>
           </button>
-
-          <button onClick={handleOpenAdminClick} style={{ backgroundColor: isAdminUnlocked ? '#00cc99' : '#2a2a2a', border: '1px solid #444', padding: '8px 12px', borderRadius: '8px', color: isAdminUnlocked ? '#111' : '#fff', fontWeight: 'bold', fontSize: '0.8rem', cursor: 'pointer' }}>
-            {isAdminUnlocked ? '⚡ HQ Active' : '🔒 Admin'}
+          <button onClick={() => setIsAdminOpen(true)} style={{ backgroundColor: isAdminUnlocked ? '#00cc99' : '#2a2a2a', border: '1px solid #444', padding: '8px 12px', borderRadius: '8px', color: isAdminUnlocked ? '#111' : '#fff', fontWeight: 'bold', cursor: 'pointer' }}>
+            {isAdminUnlocked ? '⚡ HQ' : '🔒'}
           </button>
         </div>
       </header>
 
       <div style={{ textAlign: 'center', margin: '35px 0 20px 0', padding: '0 15px' }}>
         <h1 style={{ fontSize: '2.6rem', color: '#111', margin: '0 0 8px 0', fontWeight: '900', letterSpacing: '-0.5px' }}>Welcome to Zorik.</h1>
-        <p style={{ fontSize: '1.05rem', color: '#666', margin: 0 }}>Elevate Your Everyday Aesthetic.</p>
-      </div>
-
-      <div style={{ width: '88%', maxWidth: '550px', margin: '0 auto 25px auto' }}>
-        <input type="text" placeholder="🔍 Search Clothing, Shoes, Vibes..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} style={{ width: '100%', padding: '14px 24px', fontSize: '1rem', borderRadius: '30px', border: 'none', outline: 'none', boxShadow: '0 4px 15px rgba(0,0,0,0.06)', boxSizing: 'border-box' }} />
       </div>
 
       <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', flexWrap: 'wrap', marginBottom: '35px', padding: '0 15px' }}>
@@ -299,85 +179,119 @@ function App() {
       </div>
 
       <div style={{ width: '90%', margin: '0 auto', textAlign: 'center' }}>
-        {loading && <h3 style={{ color: '#0055ff' }}>⏳ Fetching Live Drops from Cloud...</h3>}
-        {!loading && filteredProducts.length === 0 && <h3 style={{ color: '#888', marginTop: '40px' }}>No products found in this section.</h3>}
+        {loading && <h3 style={{ color: '#0055ff' }}>⏳ Fetching Drops...</h3>}
 
         <div style={{ display: 'flex', gap: '22px', flexWrap: 'wrap', justifyContent: 'center' }}>
-          {filteredProducts.map((product) => {
+          {filteredProducts.map((rawProduct) => {
+            const product = parseProductData(rawProduct);
             const stock = Number(product.countInStock || 0);
             const isSoldOut = stock <= 0;
 
             return (
-              <div key={product._id} style={{ backgroundColor: 'white', padding: '14px', borderRadius: '16px', boxShadow: '0 8px 24px rgba(0,0,0,0.06)', width: '260px', textAlign: 'left', display: 'flex', flexDirection: 'column', justifyContent: 'space-between', position: 'relative', opacity: isSoldOut ? 0.75 : 1 }}>
-                <span style={{ position: 'absolute', top: '22px', right: '22px', backgroundColor: 'rgba(0,0,0,0.75)', color: '#00ffcc', padding: '4px 10px', borderRadius: '20px', fontSize: '0.65rem', fontWeight: 'bold', zIndex: 2 }}>{product.category || 'Apparel'}</span>
+              <div key={product._id} onClick={() => { setSelectedProduct(product); setActiveImageIndex(0); setSelectedSizeForProduct(""); }} style={{ backgroundColor: 'white', padding: '14px', borderRadius: '16px', boxShadow: '0 8px 24px rgba(0,0,0,0.06)', width: '240px', textAlign: 'left', cursor: 'pointer', position: 'relative', opacity: isSoldOut ? 0.75 : 1 }}>
+                {isSoldOut && <div style={{ position: 'absolute', top: '140px', left: 0, width: '100%', backgroundColor: '#ff3333', color: 'white', textAlign: 'center', padding: '8px 0', fontWeight: '900', letterSpacing: '4px', zIndex: 3 }}>SOLD OUT</div>}
+                <img src={product.images[0]} alt={product.name} style={{ width: '100%', height: '300px', objectFit: 'cover', borderRadius: '12px', filter: isSoldOut ? 'grayscale(85%)' : 'none', backgroundColor: '#f0f0f0' }} />
+                <h3 style={{ fontSize: '1.15rem', margin: '14px 0 4px 0', color: '#111', fontWeight: '800', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{product.name}</h3>
+                <p style={{ color: '#111', fontWeight: '900', fontSize: '1.25rem', margin: '5px 0' }}>₹{product.price}</p>
 
-                {isSoldOut && (
-                  <div style={{ position: 'absolute', top: '140px', left: 0, width: '100%', backgroundColor: '#ff3333', color: 'white', textAlign: 'center', padding: '10px 0', fontWeight: '900', letterSpacing: '4px', fontSize: '1.1rem', zIndex: 3 }}>
-                    SOLD OUT
-                  </div>
-                )}
-
-                <div>
-                  <img src={product.imageUrl} alt={product.name} style={{ width: '100%', height: '310px', objectFit: 'cover', borderRadius: '12px', filter: isSoldOut ? 'grayscale(85%)' : 'none', backgroundColor: '#f0f0f0' }} />
-                  <h3 style={{ fontSize: '1.15rem', margin: '14px 0 4px 0', color: '#111', fontWeight: '800' }}>{product.name}</h3>
-                  <p style={{ color: '#666', fontSize: '0.85rem', margin: '0 0 12px 0', minHeight: '35px', lineHeight: '1.4' }}>{product.description}</p>
-                </div>
-
-                <div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                    <p style={{ color: '#111', fontWeight: '900', fontSize: '1.35rem', margin: 0 }}>₹{product.price}</p>
-                    <span style={{ fontSize: '0.75rem', fontWeight: '800', color: isSoldOut ? '#ff3333' : stock <= 5 ? '#e67e22' : '#00b894' }}>
-                      {isSoldOut ? 'Out of Stock' : stock <= 5 ? `🔥 Only ${stock} Left!` : `📦 ${stock} Left`}
-                    </span>
-                  </div>
-
-                  {product.sizes && product.sizes.length > 0 && !isSoldOut && (
-                    <div style={{ marginBottom: '12px' }}>
-                      <select value={selectedSizes[product._id] || ""} onChange={(e) => setSelectedSizes({ ...selectedSizes, [product._id]: e.target.value })} style={{ padding: '10px', width: '100%', borderRadius: '8px', border: '1.5px solid #ddd', outline: 'none', fontWeight: '700', color: '#333', cursor: 'pointer', backgroundColor: '#fcfcfc' }}>
-                        <option value="" disabled>📐 Select Size</option>
-                        {product.sizes.map(size => <option key={size} value={size}>{size}</option>)}
-                      </select>
-                    </div>
-                  )}
-
-                  <button disabled={isSoldOut} onClick={() => addToCart(product)} style={{ padding: '14px 0', backgroundColor: isSoldOut ? '#e0e0e0' : '#111', color: isSoldOut ? '#888' : '#00ffcc', border: 'none', borderRadius: '10px', cursor: isSoldOut ? 'not-allowed' : 'pointer', width: '100%', fontWeight: '900', fontSize: '0.9rem' }}>
-                    {isSoldOut ? '🚫 CURRENTLY UNAVAILABLE' : 'ADD TO CART 🛒'}
-                  </button>
-                </div>
+                {/* 🎯 THE NEW BUTTON YOU WERE MISSING! */}
+                <button style={{ padding: '10px 0', backgroundColor: '#f5f5f5', color: '#111', border: '1.5px solid #111', borderRadius: '8px', width: '100%', fontWeight: '900', fontSize: '0.85rem', cursor: 'pointer' }}>View Details 👁️</button>
               </div>
             );
           })}
         </div>
       </div>
 
-      {isCartOpen && (
-        <div style={{ position: 'fixed', top: 0, right: 0, width: '360px', maxWidth: '90vw', height: '100vh', backgroundColor: 'white', boxShadow: '-8px 0 30px rgba(0,0,0,0.2)', padding: '24px', zIndex: 2000, display: 'flex', flexDirection: 'column', justifyContent: 'space-between', boxSizing: 'border-box' }}>
-          <div>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #f0f0f0', paddingBottom: '14px' }}><h2 style={{ margin: 0, fontWeight: '900' }}>Your Cart ({cart.length})</h2><button onClick={() => setIsCartOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#666' }}>✖</button></div>
-            <div style={{ marginTop: '20px', maxHeight: '62vh', overflowY: 'auto' }}>
-              {cart.map((item) => (
-                <div key={item.cartId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px', borderBottom: '1px solid #f5f5f5', paddingBottom: '12px' }}>
-                  <div><h4 style={{ margin: 0, fontSize: '1rem', color: '#222' }}>{item.name}</h4><p style={{ margin: '4px 0', color: '#888', fontSize: '0.85rem' }}>Size: <strong>{item.selectedSize}</strong></p><p style={{ margin: 0, fontWeight: '900', color: '#111' }}>₹{item.price}</p></div>
-                  <button onClick={() => removeFromCart(item.cartId)} style={{ color: '#ff3333', border: 'none', background: 'none', cursor: 'pointer', fontWeight: 'bold' }}>Remove</button>
+      {selectedProduct && (
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100vh', backgroundColor: 'white', zIndex: 3000, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', padding: '15px 20px', borderBottom: '1px solid #eee', position: 'sticky', top: 0, backgroundColor: 'rgba(255,255,255,0.9)', backdropFilter: 'blur(10px)', zIndex: 10 }}>
+            <span style={{ fontWeight: '900', fontSize: '1.2rem', color: '#111' }}>{selectedProduct.category}</span>
+            <button onClick={() => setSelectedProduct(null)} style={{ background: '#f5f5f5', border: 'none', borderRadius: '50%', width: '35px', height: '35px', fontSize: '1.2rem', cursor: 'pointer' }}>✖</button>
+          </div>
+
+          <div style={{ display: 'flex', flexWrap: 'wrap', padding: '20px', gap: '30px', maxWidth: '1000px', margin: '0 auto' }}>
+            <div style={{ flex: '1 1 400px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+              <img src={selectedProduct.images[activeImageIndex]} alt="" style={{ width: '100%', height: '500px', objectFit: 'cover', borderRadius: '16px', boxShadow: '0 10px 30px rgba(0,0,0,0.1)' }} />
+              {selectedProduct.images.length > 1 && (
+                <div style={{ display: 'flex', gap: '10px', overflowX: 'auto', paddingBottom: '10px' }}>
+                  {selectedProduct.images.map((img, idx) => (
+                    <img key={idx} src={img} onClick={() => setActiveImageIndex(idx)} alt="" style={{ width: '70px', height: '70px', objectFit: 'cover', borderRadius: '8px', cursor: 'pointer', border: activeImageIndex === idx ? '3px solid #111' : '1px solid #ddd', opacity: activeImageIndex === idx ? 1 : 0.6 }} />
+                  ))}
                 </div>
-              ))}
+              )}
+            </div>
+
+            <div style={{ flex: '1 1 400px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
+              <h1 style={{ margin: 0, fontSize: '2.2rem', fontWeight: '900', color: '#111', lineHeight: '1.2' }}>{selectedProduct.name}</h1>
+              <p style={{ margin: 0, fontSize: '1.1rem', color: '#555', lineHeight: '1.6' }}>{selectedProduct.richText}</p>
+
+              <div style={{ display: 'flex', alignItems: 'end', gap: '15px' }}>
+                <span style={{ fontSize: '2.5rem', fontWeight: '900', color: '#111' }}>₹{selectedProduct.price}</span>
+                <span style={{ fontSize: '1rem', color: '#00aa77', fontWeight: 'bold', marginBottom: '8px' }}>M.R.P Inclusive of all taxes</span>
+              </div>
+
+              {selectedProduct.highlights && selectedProduct.highlights.length > 0 && (
+                <div style={{ marginTop: '10px', borderTop: '1px solid #eee', paddingTop: '15px' }}>
+                  <h3 style={{ margin: '0 0 10px 0', fontSize: '1.1rem', fontWeight: '900' }}>Top Highlights</h3>
+                  <ul style={{ margin: 0, paddingLeft: '20px', color: '#333', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {selectedProduct.highlights.map((point, idx) => (
+                      <li key={idx} style={{ fontSize: '0.95rem', lineHeight: '1.5' }}>{point}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div style={{ marginTop: '15px' }}>
+                <p style={{ margin: '0 0 8px 0', fontWeight: '900' }}>Select Size:</p>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  {selectedProduct.sizes.map(sz => (
+                    <button key={sz} onClick={() => setSelectedSizeForProduct(sz)} style={{ padding: '12px 20px', borderRadius: '8px', border: selectedSizeForProduct === sz ? '2px solid #111' : '1px solid #ccc', backgroundColor: selectedSizeForProduct === sz ? '#111' : '#fff', color: selectedSizeForProduct === sz ? '#fff' : '#111', fontWeight: 'bold', cursor: 'pointer', fontSize: '1rem' }}>{sz}</button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
+                <button onClick={() => handleAddToCart(selectedProduct, selectedSizeForProduct)} style={{ flex: 1, padding: '16px', backgroundColor: '#fff', color: '#111', border: '2px solid #111', borderRadius: '12px', fontWeight: '900', cursor: 'pointer', fontSize: '1.1rem' }}>ADD TO CART 🛒</button>
+                <button onClick={() => handleBuyNow(selectedProduct, selectedSizeForProduct)} style={{ flex: 1, padding: '16px', backgroundColor: '#ff9900', color: '#111', border: 'none', borderRadius: '12px', fontWeight: '900', cursor: 'pointer', fontSize: '1.1rem', boxShadow: '0 4px 15px rgba(255,153,0,0.3)' }}>BUY NOW ⚡</button>
+              </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {isCartOpen && (
+        <div style={{ position: 'fixed', top: 0, right: 0, width: '380px', maxWidth: '90vw', height: '100vh', backgroundColor: 'white', boxShadow: '-8px 0 30px rgba(0,0,0,0.2)', padding: '24px', zIndex: 4000, display: 'flex', flexDirection: 'column' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #f0f0f0', paddingBottom: '14px' }}><h2 style={{ margin: 0, fontWeight: '900' }}>Cart ({cart.length})</h2><button onClick={() => setIsCartOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer' }}>✖</button></div>
+          <div style={{ marginTop: '20px', flexGrow: 1, overflowY: 'auto' }}>
+            {cart.map((item) => (
+              <div key={item.cartId} style={{ display: 'flex', gap: '15px', marginBottom: '16px', borderBottom: '1px solid #f5f5f5', paddingBottom: '12px' }}>
+                <img src={parseProductData(item).images[0]} onClick={() => { setIsCartOpen(false); setSelectedProduct(parseProductData(item)); }} alt="" style={{ width: '70px', height: '70px', objectFit: 'cover', borderRadius: '8px', cursor: 'pointer' }} />
+                <div style={{ flex: 1 }}>
+                  <h4 style={{ margin: 0, fontSize: '0.95rem', color: '#222' }}>{item.name}</h4>
+                  <p style={{ margin: '4px 0', color: '#888', fontSize: '0.85rem' }}>Size: <strong>{item.selectedSize}</strong></p>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <p style={{ margin: 0, fontWeight: '900', color: '#111' }}>₹{item.price}</p>
+                    <button onClick={() => { setCart(cart.filter((c) => c.cartId !== item.cartId)); triggerToast("Removed", "🗑️"); }} style={{ color: '#ff3333', border: 'none', background: 'none', cursor: 'pointer', fontWeight: 'bold' }}>Remove</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
           <div style={{ borderTop: '2px solid #f0f0f0', paddingTop: '18px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '900', fontSize: '1.3rem', marginBottom: '18px', color: '#111' }}><span>Total:</span><span>₹{cartTotal}</span></div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '900', fontSize: '1.3rem', marginBottom: '18px' }}><span>Total:</span><span>₹{cart.reduce((sum, item) => sum + Number(item.price), 0)}</span></div>
             <button disabled={cart.length === 0} onClick={() => { setIsCartOpen(false); setIsCheckoutOpen(true); }} style={{ width: '100%', padding: '16px', backgroundColor: cart.length === 0 ? '#ccc' : '#111', color: cart.length === 0 ? '#666' : '#00ffcc', fontWeight: '900', border: 'none', borderRadius: '12px', cursor: cart.length === 0 ? 'not-allowed' : 'pointer', fontSize: '1rem' }}>PROCEED TO CHECKOUT</button>
           </div>
         </div>
       )}
 
       {isCheckoutOpen && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100vh', backgroundColor: 'rgba(0,0,0,0.75)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 3000, backdropFilter: 'blur(5px)' }}>
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100vh', backgroundColor: 'rgba(0,0,0,0.75)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 5000, backdropFilter: 'blur(5px)' }}>
           <div style={{ backgroundColor: 'white', padding: '30px', borderRadius: '16px', width: '400px', maxWidth: '85vw' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '12px' }}><h2 style={{ margin: 0 }}>Shipping Info</h2><button onClick={() => setIsCheckoutOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.2rem', cursor: 'pointer' }}>✖</button></div>
             <form onSubmit={handleConfirmOrder} style={{ display: 'flex', flexDirection: 'column', gap: '15px', marginTop: '20px' }}>
-              <input type="text" required placeholder="Full Name" value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc', outline: 'none' }} />
-              <input type="tel" required placeholder="Phone Number" value={customer.phone} onChange={(e) => setCustomer({ ...customer, phone: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc', outline: 'none' }} />
-              <textarea required rows="3" placeholder="Delivery Address..." value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc', outline: 'none' }} />
+              <input type="text" required placeholder="Full Name" value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
+              <input type="tel" required placeholder="Phone Number" value={customer.phone} onChange={(e) => setCustomer({ ...customer, phone: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
+              <textarea required rows="3" placeholder="Delivery Address..." value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
               <button type="submit" style={{ padding: '16px', backgroundColor: '#111', color: '#00ffcc', fontWeight: '900', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '1rem' }}>CONFIRM ORDER 🚀</button>
             </form>
           </div>
@@ -385,99 +299,43 @@ function App() {
       )}
 
       {isAdminOpen && (
-        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100vh', backgroundColor: 'rgba(0,0,0,0.88)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 4000, backdropFilter: 'blur(8px)' }}>
+        <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100vh', backgroundColor: 'rgba(0,0,0,0.88)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 6000 }}>
           {!isAdminUnlocked ? (
-            <div style={{ backgroundColor: '#111', padding: '40px', borderRadius: '18px', textAlign: 'center', border: '2px solid #333', width: '340px' }}>
-              <div style={{ fontSize: '3.5rem', marginBottom: '10px' }}>🔒</div><h2 style={{ color: '#00ffcc', margin: '0 0 20px 0', letterSpacing: '2px' }}>BOSS HQ</h2>
-              <form onSubmit={handlePinSubmit}>
-                <input type="password" required autoFocus placeholder="••••" maxLength="6" value={pinInput} onChange={(e) => setPinInput(e.target.value)} style={{ width: '80%', padding: '14px', fontSize: '1.5rem', textAlign: 'center', letterSpacing: '8px', borderRadius: '10px', border: '2px solid #444', backgroundColor: '#222', color: '#00ffcc', outline: 'none', marginBottom: '18px' }} />
-                {pinError && <p style={{ color: '#ff4444', fontSize: '0.85rem', margin: '0 0 15px 0', fontWeight: 'bold' }}>{pinError}</p>}
+            <div style={{ backgroundColor: '#111', padding: '40px', borderRadius: '18px', textAlign: 'center', width: '340px' }}>
+              <h2 style={{ color: '#00ffcc', margin: '0 0 20px 0', letterSpacing: '2px' }}>BOSS HQ</h2>
+              <form onSubmit={async (e) => { e.preventDefault(); try { const res = await axios.post('https://zorik-backend-api.onrender.com/api/admin/verify', { pin: pinInput }); if (res.data.success) { setIsAdminUnlocked(true); localStorage.setItem('zorik_boss_unlocked', 'true'); triggerToast("Unlocked 🔓", "🛡️"); } } catch (e) { alert("Wrong PIN") } }}>
+                <input type="password" required autoFocus placeholder="••••" maxLength="6" value={pinInput} onChange={(e) => setPinInput(e.target.value)} style={{ width: '80%', padding: '14px', fontSize: '1.5rem', textAlign: 'center', letterSpacing: '8px', borderRadius: '10px', backgroundColor: '#222', color: '#00ffcc', outline: 'none', marginBottom: '18px', border: '1px solid #444' }} />
                 <div style={{ display: 'flex', gap: '10px' }}>
-                  <button type="button" onClick={() => setIsAdminOpen(false)} style={{ flex: 1, padding: '14px', backgroundColor: '#333', color: '#aaa', border: 'none', borderRadius: '8px', fontWeight: 'bold', cursor: 'pointer' }}>CANCEL</button>
-                  <button type="submit" style={{ flex: 1, padding: '14px', backgroundColor: '#00ffcc', color: '#111', border: 'none', borderRadius: '8px', fontWeight: '900', cursor: 'pointer' }}>UNLOCK</button>
+                  <button type="button" onClick={() => setIsAdminOpen(false)} style={{ flex: 1, padding: '14px', backgroundColor: '#333', color: '#aaa', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>CANCEL</button>
+                  <button type="submit" style={{ flex: 1, padding: '14px', backgroundColor: '#00ffcc', color: '#111', border: 'none', borderRadius: '8px', fontWeight: '900' }}>UNLOCK</button>
                 </div>
               </form>
             </div>
           ) : (
-            <div style={{ backgroundColor: '#f4f6f8', padding: '25px', borderRadius: '16px', width: '780px', maxWidth: '95vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column', boxSizing: 'border-box', position: 'relative' }}>
+            <div style={{ backgroundColor: '#f4f6f8', padding: '25px', borderRadius: '16px', width: '780px', maxWidth: '95vw', maxHeight: '88vh', display: 'flex', flexDirection: 'column' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '2px solid #ddd', paddingBottom: '14px', marginBottom: '16px' }}>
-                <h2 style={{ margin: 0, color: '#111', fontWeight: '900' }}>🏢 Zorik Boss HQ</h2>
-                <div style={{ display: 'flex', gap: '12px' }}>
-                  <button onClick={handleAdminLogout} style={{ backgroundColor: '#ffe5e5', color: '#d9534f', border: 'none', padding: '8px 14px', borderRadius: '6px', fontWeight: 'bold', cursor: 'pointer' }}>🔒 Lock HQ</button>
-                  <button onClick={() => setIsAdminOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#555' }}>✖</button>
-                </div>
+                <h2 style={{ margin: 0, fontWeight: '900' }}>🏢 Zorik Boss HQ</h2>
+                <button onClick={() => setIsAdminOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer' }}>✖</button>
               </div>
 
               <div style={{ display: 'flex', gap: '8px', marginBottom: '18px', overflowX: 'auto' }}>
-                <button onClick={() => setAdminTab('dashboard')} style={{ flex: 1, padding: '12px', fontWeight: '800', backgroundColor: adminTab === 'dashboard' ? '#111' : '#e0e0e0', color: adminTab === 'dashboard' ? '#00ffcc' : '#333', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>📊 DASHBOARD</button>
-                <button onClick={() => { setAdminTab('orders'); fetchAdminOrders(); }} style={{ flex: 1, padding: '12px', fontWeight: '800', backgroundColor: adminTab === 'orders' ? '#111' : '#e0e0e0', color: adminTab === 'orders' ? '#00ffcc' : '#333', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>📥 ORDERS ({adminOrders.length})</button>
-                <button onClick={() => setAdminTab('inventory')} style={{ flex: 1, padding: '12px', fontWeight: '800', backgroundColor: adminTab === 'inventory' ? '#111' : '#e0e0e0', color: adminTab === 'inventory' ? '#00ffcc' : '#333', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>📦 INVENTORY</button>
-                <button onClick={() => setAdminTab('add_stock')} style={{ flex: 1, padding: '12px', fontWeight: '800', backgroundColor: adminTab === 'add_stock' ? '#111' : '#e0e0e0', color: adminTab === 'add_stock' ? '#00ffcc' : '#333', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.85rem', whiteSpace: 'nowrap' }}>➕ UPLOAD</button>
+                <button onClick={() => setAdminTab('inventory')} style={{ flex: 1, padding: '12px', fontWeight: '800', backgroundColor: adminTab === 'inventory' ? '#111' : '#e0e0e0', color: adminTab === 'inventory' ? '#00ffcc' : '#333', border: 'none', borderRadius: '8px' }}>📦 INVENTORY</button>
+                <button onClick={() => setAdminTab('add_stock')} style={{ flex: 1, padding: '12px', fontWeight: '800', backgroundColor: adminTab === 'add_stock' ? '#111' : '#e0e0e0', color: adminTab === 'add_stock' ? '#00ffcc' : '#333', border: 'none', borderRadius: '8px' }}>➕ NEW STOCK</button>
               </div>
 
               <div style={{ overflowY: 'auto', flexGrow: 1, paddingRight: '6px' }}>
-
-                {adminTab === 'dashboard' && (
-                  <div style={{ display: 'flex', gap: '20px', marginTop: '10px', flexWrap: 'wrap' }}>
-                    <div style={{ flex: 1, minWidth: '200px', backgroundColor: '#fff', padding: '22px', borderRadius: '12px', borderLeft: '6px solid #00ffcc', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
-                      <p style={{ margin: 0, color: '#666', fontWeight: 'bold' }}>Total Sales Revenue</p>
-                      <h2 style={{ margin: '10px 0 0 0', fontSize: '2.4rem', color: '#111', fontWeight: '900' }}>₹{totalRevenue}</h2>
-                    </div>
-                    <div style={{ flex: 1, minWidth: '200px', backgroundColor: '#fff', padding: '22px', borderRadius: '12px', borderLeft: '6px solid #ff4444', boxShadow: '0 4px 12px rgba(0,0,0,0.05)' }}>
-                      <p style={{ margin: 0, color: '#666', fontWeight: 'bold' }}>Pending Shipments</p>
-                      <h2 style={{ margin: '10px 0 0 0', fontSize: '2.4rem', color: '#111', fontWeight: '900' }}>{pendingCount}</h2>
-                    </div>
-                  </div>
-                )}
-
-                {adminTab === 'orders' && (
-                  adminLoading ? <p style={{ textAlign: 'center' }}>⏳ Loading Orders...</p> :
-                    adminOrders.length === 0 ? <p style={{ textAlign: 'center', color: '#777' }}>No orders placed yet.</p> :
-                      adminOrders.map((ord) => (
-                        <div key={ord._id} style={{ border: '1px solid #ddd', borderRadius: '12px', padding: '18px', marginBottom: '16px', backgroundColor: '#fff' }}>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '10px', marginBottom: '10px', flexWrap: 'wrap', gap: '10px' }}>
-                            <span style={{ fontWeight: '900', fontSize: '1.05rem', color: '#111' }}>Order #{ord.orderId}</span>
-                            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-                              <button onClick={() => toggleOrderStatus(ord._id, ord.status)} style={{ backgroundColor: ord.status && ord.status.includes('Finished') ? '#d4edda' : '#fff3cd', color: ord.status && ord.status.includes('Finished') ? '#155724' : '#856404', border: '1px solid #ccc', padding: '6px 12px', borderRadius: '20px', cursor: 'pointer', fontWeight: '800', fontSize: '0.8rem' }}>
-                                {ord.status || 'Pending ⏳'}
-                              </button>
-                              <button onClick={() => deleteOrder(ord._id)} style={{ backgroundColor: '#ffe5e5', color: '#d9534f', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '0.85rem' }}>🗑️ Delete</button>
-                            </div>
-                          </div>
-                          <p style={{ margin: '4px 0', fontSize: '0.95rem' }}>👤 <strong>{ord.customerName}</strong> ({ord.phone})</p>
-                          <p style={{ margin: '4px 0', color: '#555', fontSize: '0.9rem' }}>📍 {ord.address} | 💰 <strong>₹{ord.totalAmount}</strong></p>
-                          <div style={{ marginTop: '12px', padding: '12px', backgroundColor: '#f9f9f9', borderRadius: '8px', border: '1px solid #eee' }}>
-                            {ord.items && ord.items.map((item, idx) => (
-                              <p key={idx} style={{ margin: '3px 0', fontSize: '0.85rem', color: '#444' }}>• {item.name} <span style={{ color: '#00aa77', fontWeight: '800' }}>(Size: {item.selectedSize})</span></p>
-                            ))}
-                          </div>
-                        </div>
-                      ))
-                )}
-
-                {/* ================================================================= */}
-                {/* 🎯 V4 UPDATED INVENTORY WITH SLEEK EDIT & DELETE ACTIONS          */}
-                {/* ================================================================= */}
                 {adminTab === 'inventory' && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                    <p style={{ margin: '0 0 10px 0', fontWeight: 'bold', color: '#555' }}>📦 Live Stock Management ({products.length} Products):</p>
-                    {products.map(prod => {
-                      const bal = Number(prod.countInStock || 0);
-                      const isZero = bal <= 0;
+                    {products.map(rawProd => {
+                      const prod = parseProductData(rawProd);
+                      const isDeleted = pendingDeleteId === prod._id;
                       return (
-                        <div key={prod._id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', backgroundColor: '#fff', borderRadius: '12px', border: '1px solid #e0e0e0', gap: '8px' }}>
-                          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flex: 1, overflow: 'hidden' }}>
-                            <img src={prod.imageUrl} alt="" style={{ width: '52px', height: '52px', borderRadius: '8px', objectFit: 'cover', flexShrink: 0 }} />
-                            <div style={{ overflow: 'hidden' }}>
-                              <h4 style={{ margin: 0, fontSize: '0.95rem', color: '#111', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{prod.name}</h4>
-                              <p style={{ margin: '3px 0 0 0', fontSize: '0.8rem', color: '#777' }}>₹{prod.price} | <strong style={{ color: isZero ? '#d9534f' : '#137333' }}>{isZero ? 'Sold Out' : `${bal} Left`}</strong></p>
-                            </div>
+                        <div key={prod._id} style={{ display: isDeleted ? 'none' : 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', backgroundColor: '#fff', borderRadius: '12px', border: '1px solid #e0e0e0' }}>
+                          <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                            <img src={prod.images[0]} alt="" style={{ width: '52px', height: '52px', borderRadius: '8px', objectFit: 'cover' }} />
+                            <div><h4 style={{ margin: 0, fontSize: '0.95rem' }}>{prod.name}</h4><p style={{ margin: '3px 0 0 0', fontSize: '0.8rem', color: '#777' }}>₹{prod.price}</p></div>
                           </div>
-
-                          <div style={{ display: 'flex', gap: '6px', flexShrink: 0 }}>
-                            <button onClick={() => setEditingProduct({ ...prod })} style={{ backgroundColor: '#e3f2fd', color: '#0d47a1', border: '1px solid #bbdefb', padding: '8px 12px', borderRadius: '8px', fontWeight: '800', fontSize: '0.8rem', cursor: 'pointer' }}>✏️ Edit</button>
-                            <button onClick={() => handleDeleteStockClick(prod)} style={{ backgroundColor: '#ffe5e5', color: '#d9534f', border: '1px solid #ffcdd2', padding: '8px 12px', borderRadius: '8px', fontWeight: '800', fontSize: '0.8rem', cursor: 'pointer' }}>🗑️ Delete</button>
-                          </div>
+                          <button onClick={() => handleDeleteStockClick(prod)} style={{ backgroundColor: '#ffe5e5', color: '#d9534f', border: 'none', padding: '8px 12px', borderRadius: '8px', fontWeight: '800' }}>🗑️ Del</button>
                         </div>
                       );
                     })}
@@ -486,84 +344,57 @@ function App() {
 
                 {adminTab === 'add_stock' && (
                   <form onSubmit={handleAddStockSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px', backgroundColor: '#fff', padding: '24px', borderRadius: '12px' }}>
-                    <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
-                      <select value={newStock.gender} onChange={(e) => setNewStock({ ...newStock, gender: e.target.value })} style={{ flex: 1, minWidth: '120px', padding: '12px', borderRadius: '8px', border: '1px solid #ccc', fontWeight: 'bold' }}>
-                        <option value="Men">Men</option><option value="Women">Women</option><option value="Unisex">Unisex</option>
-                      </select>
-                      <select value={newStock.category} onChange={(e) => setNewStock({ ...newStock, category: e.target.value, sizes: [] })} style={{ flex: 2, minWidth: '180px', padding: '12px', borderRadius: '8px', border: '1px solid #ccc', fontWeight: 'bold' }}>
-                        {['T-Shirt', 'Shirt', 'Pants', 'Track Pants', 'Shorts', 'Jeans', 'Shoes', 'Belt', 'Accessories'].map(c => <option key={c} value={c}>{c}</option>)}
-                      </select>
+
+                    <div style={{ display: 'flex', gap: '15px' }}>
+                      <input type="text" required placeholder="Product Title" value={newStock.name} onChange={(e) => setNewStock({ ...newStock, name: e.target.value })} style={{ flex: 2, padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
+                      <input type="number" required placeholder="Price ₹" value={newStock.price} onChange={(e) => setNewStock({ ...newStock, price: e.target.value })} style={{ flex: 1, padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
                     </div>
 
-                    <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
-                      <input type="text" required placeholder="Product Title" value={newStock.name} onChange={(e) => setNewStock({ ...newStock, name: e.target.value })} style={{ flex: 2, minWidth: '200px', padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
-                      <input type="number" required placeholder="Price ₹" value={newStock.price} onChange={(e) => setNewStock({ ...newStock, price: e.target.value })} style={{ flex: 1, minWidth: '100px', padding: '12px', borderRadius: '8px', border: '1px solid #ccc', fontWeight: 'bold' }} />
-                      <input type="number" required placeholder="Qty" value={newStock.countInStock} onChange={(e) => setNewStock({ ...newStock, countInStock: e.target.value })} style={{ width: '90px', padding: '12px', borderRadius: '8px', border: '2px solid #00cc99', fontWeight: '900', backgroundColor: '#f0fdf4' }} />
-                    </div>
-
-                    <input type="text" placeholder="Short Description..." value={newStock.description} onChange={(e) => setNewStock({ ...newStock, description: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
+                    <textarea placeholder="Overall Description..." value={newStock.description} onChange={(e) => setNewStock({ ...newStock, description: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc', outline: 'none' }} />
 
                     <div style={{ border: '1px solid #ccc', padding: '14px', borderRadius: '8px', backgroundColor: '#fcfcfc' }}>
-                      <p style={{ margin: '0 0 10px 0', fontWeight: 'bold', fontSize: '0.9rem' }}>📏 Tick Available Sizes:</p>
-                      <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
-                        {getDynamicSizes(newStock.category).map((sz) => (
-                          <label key={sz} style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontWeight: '600' }}>
-                            <input type="checkbox" checked={newStock.sizes.includes(sz)} onChange={() => handleSizeCheckboxToggle(sz)} style={{ width: '18px', height: '18px' }} /> {sz}
-                          </label>
-                        ))}
-                      </div>
+                      <p style={{ margin: '0 0 10px 0', fontWeight: 'bold', fontSize: '0.9rem' }}>✨ Top Highlights (Amazon Style):</p>
+                      {newStock.highlights.map((point, index) => (
+                        <div key={index} style={{ display: 'flex', gap: '10px', marginBottom: '8px' }}>
+                          <span style={{ fontSize: '1.2rem', color: '#888' }}>•</span>
+                          <input type="text" placeholder={`Highlight feature ${index + 1}...`} value={point} onChange={(e) => { const newH = [...newStock.highlights]; newH[index] = e.target.value; setNewStock({ ...newStock, highlights: newH }) }} style={{ flex: 1, padding: '8px', borderRadius: '6px', border: '1px solid #ddd' }} />
+                        </div>
+                      ))}
+                      <button type="button" onClick={() => setNewStock({ ...newStock, highlights: [...newStock.highlights, ''] })} style={{ padding: '6px 12px', backgroundColor: '#e9ecef', border: 'none', borderRadius: '6px', fontSize: '0.8rem', fontWeight: 'bold', cursor: 'pointer', marginTop: '5px' }}>+ Add Bullet Point</button>
                     </div>
 
                     <label style={{ border: '2px dashed #00cc99', padding: '20px', textAlign: 'center', borderRadius: '10px', cursor: 'pointer', backgroundColor: '#f0fdf4' }}>
-                      <span style={{ fontWeight: 'bold', color: '#155724' }}>{selectedFile ? `✅ Ready: "${selectedFile.name}"` : "📸 Tap to Pick Image from Gallery"}</span>
-                      <input type="file" accept="image/*" required onChange={(e) => setSelectedFile(e.target.files[0])} style={{ display: 'none' }} />
+                      <span style={{ fontWeight: 'bold', color: '#155724' }}>
+                        {selectedFiles.length > 0 ? `✅ ${selectedFiles.length} Images Selected` : "📸 Select MULTIPLE Images for Carousel"}
+                      </span>
+                      <input type="file" accept="image/*" multiple required onChange={(e) => setSelectedFiles(Array.from(e.target.files))} style={{ display: 'none' }} />
                     </label>
+                    {selectedFiles.length > 0 && (
+                      <div style={{ display: 'flex', gap: '10px', overflowX: 'auto' }}>
+                        {selectedFiles.map((file, i) => <img key={i} src={URL.createObjectURL(file)} style={{ width: '50px', height: '50px', objectFit: 'cover', borderRadius: '5px' }} alt="" />)}
+                      </div>
+                    )}
 
-                    <button type="submit" disabled={isUploading} style={{ padding: '16px', backgroundColor: isUploading ? '#ccc' : '#111', color: isUploading ? '#666' : '#00ffcc', fontWeight: '900', border: 'none', borderRadius: '10px', cursor: 'pointer', fontSize: '1rem' }}>{isUploading ? "☁️ UPLOADING..." : "⚡ PUBLISH TO LIVE STORE"}</button>
+                    <div style={{ display: 'flex', gap: '15px' }}>
+                      <input type="text" placeholder="Sizes (e.g., S, M, L)" onChange={(e) => setNewStock({ ...newStock, sizes: e.target.value.split(',').map(s => s.trim()) })} style={{ flex: 1, padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
+                    </div>
+
+                    <button type="submit" disabled={isUploading} style={{ padding: '16px', backgroundColor: isUploading ? '#ccc' : '#111', color: isUploading ? '#666' : '#00ffcc', fontWeight: '900', border: 'none', borderRadius: '10px', cursor: 'pointer' }}>{isUploading ? "☁️ UPLOADING..." : "⚡ PUBLISH TO LIVE STORE"}</button>
                   </form>
                 )}
               </div>
-
-              {/* ================================================================= */}
-              {/* 🎯 EDIT PRODUCT POP-UP MODAL                                      */}
-              {/* ================================================================= */}
-              {editingProduct && (
-                <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', backgroundColor: 'rgba(255,255,255,0.96)', zIndex: 100, borderRadius: '16px', padding: '25px', display: 'flex', flexDirection: 'column', boxSizing: 'border-box' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '2px solid #222', paddingBottom: '10px', marginBottom: '15px' }}>
-                    <h3 style={{ margin: 0, fontSize: '1.2rem' }}>✏️ Edit "{editingProduct.name}"</h3>
-                    <button onClick={() => setEditingProduct(null)} style={{ background: 'none', border: 'none', fontSize: '1.4rem', cursor: 'pointer' }}>✖</button>
-                  </div>
-
-                  <form onSubmit={handleUpdateStockSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
-                    <div><label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#666' }}>Product Title:</label><input type="text" value={editingProduct.name} onChange={(e) => setEditingProduct({ ...editingProduct, name: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #ccc', marginTop: '4px', boxSizing: 'border-box' }} /></div>
-
-                    <div style={{ display: 'flex', gap: '15px' }}>
-                      <div style={{ flex: 1 }}><label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#666' }}>Price (₹):</label><input type="number" value={editingProduct.price} onChange={(e) => setEditingProduct({ ...editingProduct, price: Number(e.target.value) })} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '1px solid #ccc', marginTop: '4px', fontWeight: 'bold' }} /></div>
-                      <div style={{ flex: 1 }}><label style={{ fontSize: '0.8rem', fontWeight: 'bold', color: '#00aa77' }}>Stock Balance Qty:</label><input type="number" value={editingProduct.countInStock} onChange={(e) => setEditingProduct({ ...editingProduct, countInStock: e.target.value })} style={{ width: '100%', padding: '10px', borderRadius: '6px', border: '2px solid #00cc99', marginTop: '4px', fontWeight: '900', backgroundColor: '#f0fdf4' }} /></div>
-                    </div>
-
-                    <button type="submit" style={{ padding: '14px', backgroundColor: '#111', color: '#00ffcc', fontWeight: '900', border: 'none', borderRadius: '8px', cursor: 'pointer', marginTop: '10px' }}>⚡ SAVE UPDATES TO LIVE DATABASE</button>
-                  </form>
-                </div>
-              )}
-
             </div>
           )}
         </div>
       )}
 
-      {/* ================================================================= */}
-      {/* 🚀 THE 15s TIME-MACHINE UNDO FLOATING BAR                         */}
-      {/* ================================================================= */}
-      {pendingDeleteProduct && (
-        <div style={{ position: 'fixed', bottom: '25px', left: '50%', transform: 'translateX(-50%)', backgroundColor: '#111', color: '#fff', padding: '14px 22px', borderRadius: '14px', display: 'flex', alignItems: 'center', gap: '15px', boxShadow: '0 12px 35px rgba(0,0,0,0.45)', zIndex: 10000, width: '330px', maxWidth: '85vw', justifyContent: 'space-between', border: '1.5px solid #333' }}>
-          <span style={{ fontSize: '0.85rem', fontWeight: 'bold', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>🗑️ Deleted "{pendingDeleteProduct.name}"</span>
-          <button onClick={handleUndoStockDelete} style={{ backgroundColor: '#00ffcc', color: '#111', border: 'none', padding: '8px 16px', borderRadius: '8px', fontWeight: '900', cursor: 'pointer', fontSize: '0.85rem', flexShrink: 0, boxShadow: '0 0 15px rgba(0,255,204,0.4)' }}>UNDO (15s)</button>
+      {pendingDeleteId && (
+        <div style={{ position: 'fixed', bottom: '25px', left: '50%', transform: 'translateX(-50%)', backgroundColor: '#111', color: '#fff', padding: '14px 22px', borderRadius: '14px', zIndex: 10000 }}>
+          <span style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>🗑️ Deleting... (Please don't refresh)</span>
         </div>
       )}
 
       {toast.show && <div style={{ position: 'fixed', bottom: '30px', right: '30px', backgroundColor: '#111', color: '#00ffcc', padding: '14px 26px', borderRadius: '10px', fontWeight: '900', zIndex: 9999 }}>{toast.icon} {toast.text}</div>}
-      {celebration.show && <div style={{ position: 'fixed', top: 0, left: 0, width: '100%', height: '100vh', backgroundColor: 'rgba(0,0,0,0.88)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 10000 }}><div style={{ backgroundColor: 'white', padding: '45px', borderRadius: '24px', textAlign: 'center', maxWidth: '80vw' }}><h1 style={{ fontSize: '3rem', margin: '0 0 10px 0' }}>🎉 WOOHOO!</h1><p style={{ fontSize: '1.2rem', color: '#555', marginBottom: '25px' }}>Your Order was Placed Successfully!</p><button onClick={() => { setCelebration({ show: false }); handleOpenAdminClick(); }} style={{ padding: '14px 28px', backgroundColor: '#111', color: '#00ffcc', border: 'none', borderRadius: '30px', fontWeight: '900', cursor: 'pointer' }}>TRACK IN ADMIN HQ</button></div></div>}
     </div>
   );
 }
