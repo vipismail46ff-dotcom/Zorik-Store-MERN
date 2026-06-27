@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 
 function App() {
   const [products, setProducts] = useState([]);
 
-  // 🎯 FIX 1: Cart Saves to LocalStorage (Won't clear on refresh!)
+  // 🎯 LocalStorage Cart Integration
   const [cart, setCart] = useState(() => {
     const saved = localStorage.getItem('zorik_cart');
     return saved ? JSON.parse(saved) : [];
@@ -16,6 +16,7 @@ function App() {
   const [customer, setCustomer] = useState({ name: '', phone: '', address: '' });
   const [isAdminOpen, setIsAdminOpen] = useState(false);
   const [adminOrders, setAdminOrders] = useState([]);
+  const [adminLoading, setAdminLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeFilter, setActiveFilter] = useState('All');
   const [toast, setToast] = useState({ show: false, text: '', icon: '' });
@@ -24,20 +25,15 @@ function App() {
   const [pinInput, setPinInput] = useState('');
   const [adminTab, setAdminTab] = useState('inventory');
 
-  // 🎯 FIX 2: Multiple Images & Highlights for Amazon Style
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [newStock, setNewStock] = useState({
     name: '', price: '', description: '', gender: 'Men', category: 'T-Shirt', countInStock: '25', sizes: [], highlights: ['']
   });
   const [isUploading, setIsUploading] = useState(false);
 
-  // 🎯 FIX 3: Product Detail Modal
   const [selectedProduct, setSelectedProduct] = useState(null);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [selectedSizeForProduct, setSelectedSizeForProduct] = useState("");
-
-  const deleteTimerRef = useRef(null);
-  const [pendingDeleteId, setPendingDeleteId] = useState(null);
 
   useEffect(() => {
     localStorage.setItem('zorik_cart', JSON.stringify(cart));
@@ -51,7 +47,30 @@ function App() {
     } catch (err) { } finally { setLoading(false); }
   };
 
-  useEffect(() => { fetchProducts(); }, []);
+  // 🎯 FIX 1: Safe Array check for Admin Orders fetching
+  const fetchAdminOrders = async () => {
+    setAdminLoading(true);
+    try {
+      const response = await axios.get('https://zorik-backend-api.onrender.com/api/orders');
+      if (Array.isArray(response.data)) {
+        setAdminOrders(response.data.reverse());
+      } else if (response.data && Array.isArray(response.data.orders)) {
+        setAdminOrders(response.data.orders.reverse());
+      } else {
+        setAdminOrders([]);
+      }
+    } catch (err) {
+      console.error("Fetch Admin Orders Failed:", err);
+      setAdminOrders([]);
+    } finally {
+      setAdminLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchProducts();
+    if (isAdminUnlocked) fetchAdminOrders();
+  }, [isAdminUnlocked]);
 
   const triggerToast = (text, icon = '🛍️') => {
     setToast({ show: true, text, icon });
@@ -84,29 +103,76 @@ function App() {
     setIsCheckoutOpen(true);
   };
 
+  // 🎯 FIX 2: Clean Items array & structure to satisfy Mongoose Order Schema rules perfectly
   const handleConfirmOrder = async (e) => {
     e.preventDefault();
     const randomOrderId = "ZK" + Math.floor(100000 + Math.random() * 900000);
     const cartTotal = cart.reduce((sum, item) => sum + Number(item.price), 0);
-    const orderData = { orderId: randomOrderId, customerName: customer.name, phone: customer.phone, address: customer.address, items: cart, totalAmount: cartTotal, status: 'Pending ⏳' };
+
+    // Filtering out local UI properties (richText, images, highlights) to avoid Mongoose 400 error
+    const cleanedItems = cart.map(item => ({
+      name: item.name,
+      price: Number(item.price),
+      description: typeof item.description === 'string' ? item.description : "Zorik Premium Fit",
+      imageUrl: item.imageUrl || item.images[0],
+      category: item.category || "Zorik Live Collection"
+    }));
+
+    const orderData = {
+      orderId: randomOrderId,
+      customerName: customer.name,
+      phone: customer.phone,
+      address: customer.address,
+      items: cleanedItems,
+      totalAmount: cartTotal
+      // Omitted status emoji to prevent strict backend enum validation crash
+    };
 
     try {
       await axios.post('https://zorik-backend-api.onrender.com/api/orders', orderData);
-      setCart([]); setIsCheckoutOpen(false); setCustomer({ name: '', phone: '', address: '' });
+      setCart([]);
+      localStorage.removeItem('zorik_cart');
+      setIsCheckoutOpen(false);
+      setCustomer({ name: '', phone: '', address: '' });
       triggerToast("Order Placed Successfully! 🎉", "✅");
       fetchProducts();
-    } catch (err) { alert("Error placing order!"); }
+      fetchAdminOrders(); // Refresh Admin list instantly!
+    } catch (err) {
+      console.error("Order Pipeline Blocked:", err);
+      alert("Database Refused Order! Check console fields.");
+    }
   };
 
-  const handleDeleteStockClick = (prod) => {
-    setProducts(prev => prev.filter(p => p._id !== prod._id));
-    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current);
-    setPendingDeleteId(prod._id);
+  // 🎯 FIX 3: Permanent Instant DB Deletion to avoid Page Reload Return Bugs
+  const handleDeleteStockClick = async (prod) => {
+    if (!window.confirm(`⚠️ Are you sure you want to permanently delete "${prod.name}" from Live Cloud?`)) return;
 
-    deleteTimerRef.current = setTimeout(async () => {
-      try { await axios.delete(`https://zorik-backend-api.onrender.com/api/products/${prod._id}`); } catch (err) { }
-      setPendingDeleteId(null);
-    }, 4000);
+    // Instant UI optimization
+    setProducts(prev => prev.filter(p => p._id !== prod._id));
+    triggerToast("Deleting from Cloud Database...", "⏳");
+
+    try {
+      await axios.delete(`https://zorik-backend-api.onrender.com/api/products/${prod._id}`);
+      triggerToast("Product deleted permanently!", "🗑️");
+    } catch (err) {
+      console.error("DB Delete Blocked:", err);
+      alert("Failed to delete from Cloud Server!");
+      fetchProducts(); // rollback UI on error
+    }
+  };
+
+  const toggleOrderStatus = async (orderId, currentStatus) => {
+    const newStatus = currentStatus && currentStatus.includes('Pending') ? 'Finished' : 'Pending';
+    setAdminOrders(adminOrders.map(ord => ord._id === orderId ? { ...ord, status: newStatus } : ord));
+    triggerToast(`Order status updated!`, "📦");
+    axios.put(`https://zorik-backend-api.onrender.com/api/orders/${orderId}`, { status: newStatus }).catch(() => { });
+  };
+
+  const deleteOrder = async (orderId) => {
+    if (!window.confirm("⚠️ Delete this order permanently?")) return;
+    setAdminOrders(adminOrders.filter(o => o._id !== orderId));
+    triggerToast("Order deleted", "🗑️");
+    axios.delete(`https://zorik-backend-api.onrender.com/api/orders/${orderId}`).catch(() => { });
   };
 
   const handleAddStockSubmit = async (e) => {
@@ -163,7 +229,7 @@ function App() {
             🛒 Cart <span style={{ backgroundColor: '#00ffcc', color: '#111', borderRadius: '50%', padding: '1px 7px', fontSize: '0.75rem' }}>{cart.length}</span>
           </button>
           <button onClick={() => setIsAdminOpen(true)} style={{ backgroundColor: isAdminUnlocked ? '#00cc99' : '#2a2a2a', border: '1px solid #444', padding: '8px 12px', borderRadius: '8px', color: isAdminUnlocked ? '#111' : '#fff', fontWeight: 'bold', cursor: 'pointer' }}>
-            {isAdminUnlocked ? '⚡ HQ' : '🔒'}
+            {isAdminUnlocked ? '⚡ HQ' : '🔒 Admin'}
           </button>
         </div>
       </header>
@@ -193,9 +259,7 @@ function App() {
                 <img src={product.images[0]} alt={product.name} style={{ width: '100%', height: '300px', objectFit: 'cover', borderRadius: '12px', filter: isSoldOut ? 'grayscale(85%)' : 'none', backgroundColor: '#f0f0f0' }} />
                 <h3 style={{ fontSize: '1.15rem', margin: '14px 0 4px 0', color: '#111', fontWeight: '800', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{product.name}</h3>
                 <p style={{ color: '#111', fontWeight: '900', fontSize: '1.25rem', margin: '5px 0' }}>₹{product.price}</p>
-
-                {/* 🎯 THE NEW BUTTON YOU WERE MISSING! */}
-                <button style={{ padding: '10px 0', backgroundColor: '#f5f5f5', color: '#111', border: '1.5px solid #111', borderRadius: '8px', width: '100%', fontWeight: '900', fontSize: '0.85rem', cursor: 'pointer' }}>View Details 👁️</button>
+                <button style={{ padding: '10px 0', backgroundColor: '#f5f5f5', color: '#111', border: '1.5px solid #111', borderRadius: '8px', width: '100%', fontWeight: '900', fontSize: '0.85rem' }}>View Details 👁️</button>
               </div>
             );
           })}
@@ -224,10 +288,8 @@ function App() {
             <div style={{ flex: '1 1 400px', display: 'flex', flexDirection: 'column', gap: '15px' }}>
               <h1 style={{ margin: 0, fontSize: '2.2rem', fontWeight: '900', color: '#111', lineHeight: '1.2' }}>{selectedProduct.name}</h1>
               <p style={{ margin: 0, fontSize: '1.1rem', color: '#555', lineHeight: '1.6' }}>{selectedProduct.richText}</p>
-
               <div style={{ display: 'flex', alignItems: 'end', gap: '15px' }}>
                 <span style={{ fontSize: '2.5rem', fontWeight: '900', color: '#111' }}>₹{selectedProduct.price}</span>
-                <span style={{ fontSize: '1rem', color: '#00aa77', fontWeight: 'bold', marginBottom: '8px' }}>M.R.P Inclusive of all taxes</span>
               </div>
 
               {selectedProduct.highlights && selectedProduct.highlights.length > 0 && (
@@ -245,14 +307,14 @@ function App() {
                 <p style={{ margin: '0 0 8px 0', fontWeight: '900' }}>Select Size:</p>
                 <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                   {selectedProduct.sizes.map(sz => (
-                    <button key={sz} onClick={() => setSelectedSizeForProduct(sz)} style={{ padding: '12px 20px', borderRadius: '8px', border: selectedSizeForProduct === sz ? '2px solid #111' : '1px solid #ccc', backgroundColor: selectedSizeForProduct === sz ? '#111' : '#fff', color: selectedSizeForProduct === sz ? '#fff' : '#111', fontWeight: 'bold', cursor: 'pointer', fontSize: '1rem' }}>{sz}</button>
+                    <button key={sz} onClick={() => setSelectedSizeForProduct(sz)} style={{ padding: '12px 20px', borderRadius: '8px', border: selectedSizeForProduct === sz ? '2px solid #111' : '1px solid #ccc', backgroundColor: selectedSizeForProduct === sz ? '#111' : '#fff', color: selectedSizeForProduct === sz ? '#fff' : '#111', fontWeight: 'bold', fontSize: '1rem' }}>{sz}</button>
                   ))}
                 </div>
               </div>
 
               <div style={{ display: 'flex', gap: '15px', marginTop: '20px' }}>
-                <button onClick={() => handleAddToCart(selectedProduct, selectedSizeForProduct)} style={{ flex: 1, padding: '16px', backgroundColor: '#fff', color: '#111', border: '2px solid #111', borderRadius: '12px', fontWeight: '900', cursor: 'pointer', fontSize: '1.1rem' }}>ADD TO CART 🛒</button>
-                <button onClick={() => handleBuyNow(selectedProduct, selectedSizeForProduct)} style={{ flex: 1, padding: '16px', backgroundColor: '#ff9900', color: '#111', border: 'none', borderRadius: '12px', fontWeight: '900', cursor: 'pointer', fontSize: '1.1rem', boxShadow: '0 4px 15px rgba(255,153,0,0.3)' }}>BUY NOW ⚡</button>
+                <button onClick={() => handleAddToCart(selectedProduct, selectedSizeForProduct)} style={{ flex: 1, padding: '16px', backgroundColor: '#fff', color: '#111', border: '2px solid #111', borderRadius: '12px', fontWeight: '900', fontSize: '1.1rem' }}>ADD TO CART 🛒</button>
+                <button onClick={() => handleBuyNow(selectedProduct, selectedSizeForProduct)} style={{ flex: 1, padding: '16px', backgroundColor: '#ff9900', color: '#111', border: 'none', borderRadius: '12px', fontWeight: '900', fontSize: '1.1rem' }}>BUY NOW ⚡</button>
               </div>
             </div>
           </div>
@@ -267,10 +329,10 @@ function App() {
               <div key={item.cartId} style={{ display: 'flex', gap: '15px', marginBottom: '16px', borderBottom: '1px solid #f5f5f5', paddingBottom: '12px' }}>
                 <img src={parseProductData(item).images[0]} onClick={() => { setIsCartOpen(false); setSelectedProduct(parseProductData(item)); }} alt="" style={{ width: '70px', height: '70px', objectFit: 'cover', borderRadius: '8px', cursor: 'pointer' }} />
                 <div style={{ flex: 1 }}>
-                  <h4 style={{ margin: 0, fontSize: '0.95rem', color: '#222' }}>{item.name}</h4>
+                  <h4 style={{ margin: 0, fontSize: '0.95rem' }}>{item.name}</h4>
                   <p style={{ margin: '4px 0', color: '#888', fontSize: '0.85rem' }}>Size: <strong>{item.selectedSize}</strong></p>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <p style={{ margin: 0, fontWeight: '900', color: '#111' }}>₹{item.price}</p>
+                    <p style={{ margin: 0, fontWeight: '900' }}>₹{item.price}</p>
                     <button onClick={() => { setCart(cart.filter((c) => c.cartId !== item.cartId)); triggerToast("Removed", "🗑️"); }} style={{ color: '#ff3333', border: 'none', background: 'none', cursor: 'pointer', fontWeight: 'bold' }}>Remove</button>
                   </div>
                 </div>
@@ -279,7 +341,7 @@ function App() {
           </div>
           <div style={{ borderTop: '2px solid #f0f0f0', paddingTop: '18px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: '900', fontSize: '1.3rem', marginBottom: '18px' }}><span>Total:</span><span>₹{cart.reduce((sum, item) => sum + Number(item.price), 0)}</span></div>
-            <button disabled={cart.length === 0} onClick={() => { setIsCartOpen(false); setIsCheckoutOpen(true); }} style={{ width: '100%', padding: '16px', backgroundColor: cart.length === 0 ? '#ccc' : '#111', color: cart.length === 0 ? '#666' : '#00ffcc', fontWeight: '900', border: 'none', borderRadius: '12px', cursor: cart.length === 0 ? 'not-allowed' : 'pointer', fontSize: '1rem' }}>PROCEED TO CHECKOUT</button>
+            <button disabled={cart.length === 0} onClick={() => { setIsCartOpen(false); setIsCheckoutOpen(true); }} style={{ width: '100%', padding: '16px', backgroundColor: cart.length === 0 ? '#ccc' : '#111', color: cart.length === 0 ? '#666' : '#00ffcc', fontWeight: '900', border: 'none', borderRadius: '12px', fontSize: '1rem' }}>PROCEED TO CHECKOUT</button>
           </div>
         </div>
       )}
@@ -292,7 +354,7 @@ function App() {
               <input type="text" required placeholder="Full Name" value={customer.name} onChange={(e) => setCustomer({ ...customer, name: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
               <input type="tel" required placeholder="Phone Number" value={customer.phone} onChange={(e) => setCustomer({ ...customer, phone: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
               <textarea required rows="3" placeholder="Delivery Address..." value={customer.address} onChange={(e) => setCustomer({ ...customer, address: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
-              <button type="submit" style={{ padding: '16px', backgroundColor: '#111', color: '#00ffcc', fontWeight: '900', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '1rem' }}>CONFIRM ORDER 🚀</button>
+              <button type="submit" style={{ padding: '16px', backgroundColor: '#111', color: '#00ffcc', fontWeight: '900', border: 'none', borderRadius: '8px', fontSize: '1rem' }}>CONFIRM ORDER 🚀</button>
             </form>
           </div>
         </div>
@@ -304,9 +366,9 @@ function App() {
             <div style={{ backgroundColor: '#111', padding: '40px', borderRadius: '18px', textAlign: 'center', width: '340px' }}>
               <h2 style={{ color: '#00ffcc', margin: '0 0 20px 0', letterSpacing: '2px' }}>BOSS HQ</h2>
               <form onSubmit={async (e) => { e.preventDefault(); try { const res = await axios.post('https://zorik-backend-api.onrender.com/api/admin/verify', { pin: pinInput }); if (res.data.success) { setIsAdminUnlocked(true); localStorage.setItem('zorik_boss_unlocked', 'true'); triggerToast("Unlocked 🔓", "🛡️"); } } catch (e) { alert("Wrong PIN") } }}>
-                <input type="password" required autoFocus placeholder="••••" maxLength="6" value={pinInput} onChange={(e) => setPinInput(e.target.value)} style={{ width: '80%', padding: '14px', fontSize: '1.5rem', textAlign: 'center', letterSpacing: '8px', borderRadius: '10px', backgroundColor: '#222', color: '#00ffcc', outline: 'none', marginBottom: '18px', border: '1px solid #444' }} />
+                <input type="password" required autoFocus placeholder="••••" maxLength="6" value={pinInput} onChange={(e) => setPinInput(e.target.value)} style={{ width: '80%', padding: '14px', fontSize: '1.5rem', textAlign: 'center', letterSpacing: '8px', borderRadius: '10px', backgroundColor: '#222', color: '#00ffcc', marginBottom: '18px', border: '1px solid #444' }} />
                 <div style={{ display: 'flex', gap: '10px' }}>
-                  <button type="button" onClick={() => setIsAdminOpen(false)} style={{ flex: 1, padding: '14px', backgroundColor: '#333', color: '#aaa', border: 'none', borderRadius: '8px', fontWeight: 'bold' }}>CANCEL</button>
+                  <button type="button" onClick={() => setIsAdminOpen(false)} style={{ flex: 1, padding: '14px', backgroundColor: '#333', color: '#aaa', border: 'none', borderRadius: '8px' }}>CANCEL</button>
                   <button type="submit" style={{ flex: 1, padding: '14px', backgroundColor: '#00ffcc', color: '#111', border: 'none', borderRadius: '8px', fontWeight: '900' }}>UNLOCK</button>
                 </div>
               </form>
@@ -320,6 +382,7 @@ function App() {
 
               <div style={{ display: 'flex', gap: '8px', marginBottom: '18px', overflowX: 'auto' }}>
                 <button onClick={() => setAdminTab('inventory')} style={{ flex: 1, padding: '12px', fontWeight: '800', backgroundColor: adminTab === 'inventory' ? '#111' : '#e0e0e0', color: adminTab === 'inventory' ? '#00ffcc' : '#333', border: 'none', borderRadius: '8px' }}>📦 INVENTORY</button>
+                <button onClick={() => setAdminTab('orders')} style={{ flex: 1, padding: '12px', fontWeight: '800', backgroundColor: adminTab === 'orders' ? '#111' : '#e0e0e0', color: adminTab === 'orders' ? '#00ffcc' : '#333', border: 'none', borderRadius: '8px' }}>📥 LIVE ORDERS ({adminOrders.length})</button>
                 <button onClick={() => setAdminTab('add_stock')} style={{ flex: 1, padding: '12px', fontWeight: '800', backgroundColor: adminTab === 'add_stock' ? '#111' : '#e0e0e0', color: adminTab === 'add_stock' ? '#00ffcc' : '#333', border: 'none', borderRadius: '8px' }}>➕ NEW STOCK</button>
               </div>
 
@@ -328,23 +391,41 @@ function App() {
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
                     {products.map(rawProd => {
                       const prod = parseProductData(rawProd);
-                      const isDeleted = pendingDeleteId === prod._id;
                       return (
-                        <div key={prod._id} style={{ display: isDeleted ? 'none' : 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', backgroundColor: '#fff', borderRadius: '12px', border: '1px solid #e0e0e0' }}>
+                        <div key={prod._id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', backgroundColor: '#fff', borderRadius: '12px', border: '1px solid #e0e0e0' }}>
                           <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
                             <img src={prod.images[0]} alt="" style={{ width: '52px', height: '52px', borderRadius: '8px', objectFit: 'cover' }} />
-                            <div><h4 style={{ margin: 0, fontSize: '0.95rem' }}>{prod.name}</h4><p style={{ margin: '3px 0 0 0', fontSize: '0.8rem', color: '#777' }}>₹{prod.price}</p></div>
+                            <div><h4 style={{ margin: 0, fontSize: '0.95rem' }}>{prod.name}</h4><p style={{ margin: '3px 0 0 0', fontSize: '0.8rem', color: '#777' }}>₹{prod.price} | Stock: {prod.countInStock}</p></div>
                           </div>
-                          <button onClick={() => handleDeleteStockClick(prod)} style={{ backgroundColor: '#ffe5e5', color: '#d9534f', border: 'none', padding: '8px 12px', borderRadius: '8px', fontWeight: '800' }}>🗑️ Del</button>
+                          <button onClick={() => handleDeleteStockClick(prod)} style={{ backgroundColor: '#ffe5e5', color: '#d9534f', border: 'none', padding: '8px 12px', borderRadius: '8px', fontWeight: '800', cursor: 'pointer' }}>🗑️ Del</button>
                         </div>
                       );
                     })}
                   </div>
                 )}
 
+                {adminTab === 'orders' && (
+                  adminLoading ? <p style={{ textAlign: 'center' }}>⏳ Loading Cloud Orders...</p> :
+                    adminOrders.length === 0 ? <p style={{ textAlign: 'center', color: '#777' }}>No orders placed yet.</p> :
+                      adminOrders.map((ord) => (
+                        <div key={ord._id} style={{ border: '1px solid #ddd', borderRadius: '12px', padding: '18px', marginBottom: '16px', backgroundColor: '#fff' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #eee', paddingBottom: '10px', marginBottom: '10px' }}>
+                            <span style={{ fontWeight: '900' }}>Order #{ord.orderId}</span>
+                            <div style={{ display: 'flex', gap: '10px' }}>
+                              <button onClick={() => toggleOrderStatus(ord._id, ord.status)} style={{ backgroundColor: '#fff3cd', color: '#856404', border: '1px solid #ccc', padding: '6px 12px', borderRadius: '20px', cursor: 'pointer', fontWeight: '800', fontSize: '0.8rem' }}>
+                                {ord.status || 'Order Placed'} ⏳
+                              </button>
+                              <button onClick={() => deleteOrder(ord._id)} style={{ backgroundColor: '#ffe5e5', color: '#d9534f', border: 'none', padding: '6px 10px', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>🗑️ Delete</button>
+                            </div>
+                          </div>
+                          <p style={{ margin: '2px 0' }}>👤 <strong>{ord.customerName}</strong> ({ord.phone})</p>
+                          <p style={{ margin: '2px 0', color: '#555' }}>📍 {ord.address} | 💰 <strong>₹{ord.totalAmount}</strong></p>
+                        </div>
+                      ))
+                )}
+
                 {adminTab === 'add_stock' && (
                   <form onSubmit={handleAddStockSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px', backgroundColor: '#fff', padding: '24px', borderRadius: '12px' }}>
-
                     <div style={{ display: 'flex', gap: '15px' }}>
                       <input type="text" required placeholder="Product Title" value={newStock.name} onChange={(e) => setNewStock({ ...newStock, name: e.target.value })} style={{ flex: 2, padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
                       <input type="number" required placeholder="Price ₹" value={newStock.price} onChange={(e) => setNewStock({ ...newStock, price: e.target.value })} style={{ flex: 1, padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
@@ -363,20 +444,25 @@ function App() {
                       <button type="button" onClick={() => setNewStock({ ...newStock, highlights: [...newStock.highlights, ''] })} style={{ padding: '6px 12px', backgroundColor: '#e9ecef', border: 'none', borderRadius: '6px', fontSize: '0.8rem', fontWeight: 'bold', cursor: 'pointer', marginTop: '5px' }}>+ Add Bullet Point</button>
                     </div>
 
+                    <div style={{ display: 'flex', gap: '15px', flexWrap: 'wrap' }}>
+                      <select value={newStock.gender} onChange={(e) => setNewStock({ ...newStock, gender: e.target.value })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }}>
+                        <option value="Men">Men</option><option value="Women">Women</option><option value="Unisex">Unisex</option>
+                      </select>
+                      <select value={newStock.category} onChange={(e) => setNewStock({ ...newStock, category: e.target.value, sizes: [] })} style={{ padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }}>
+                        {['T-Shirt', 'Shirt', 'Pants', 'Track Pants', 'Shorts', 'Jeans', 'Shoes', 'Belt'].map(c => <option key={c} value={c}>{c}</option>)}
+                      </select>
+                      <input type="number" required placeholder="Stock Qty" value={newStock.countInStock} onChange={(e) => setNewStock({ ...newStock, countInStock: e.target.value })} style={{ width: '100px', padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
+                    </div>
+
                     <label style={{ border: '2px dashed #00cc99', padding: '20px', textAlign: 'center', borderRadius: '10px', cursor: 'pointer', backgroundColor: '#f0fdf4' }}>
                       <span style={{ fontWeight: 'bold', color: '#155724' }}>
                         {selectedFiles.length > 0 ? `✅ ${selectedFiles.length} Images Selected` : "📸 Select MULTIPLE Images for Carousel"}
                       </span>
                       <input type="file" accept="image/*" multiple required onChange={(e) => setSelectedFiles(Array.from(e.target.files))} style={{ display: 'none' }} />
                     </label>
-                    {selectedFiles.length > 0 && (
-                      <div style={{ display: 'flex', gap: '10px', overflowX: 'auto' }}>
-                        {selectedFiles.map((file, i) => <img key={i} src={URL.createObjectURL(file)} style={{ width: '50px', height: '50px', objectFit: 'cover', borderRadius: '5px' }} alt="" />)}
-                      </div>
-                    )}
 
                     <div style={{ display: 'flex', gap: '15px' }}>
-                      <input type="text" placeholder="Sizes (e.g., S, M, L)" onChange={(e) => setNewStock({ ...newStock, sizes: e.target.value.split(',').map(s => s.trim()) })} style={{ flex: 1, padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
+                      <input type="text" placeholder="Sizes separated by comma (S, M, L)" onChange={(e) => setNewStock({ ...newStock, sizes: e.target.value.split(',').map(s => s.trim()) })} style={{ flex: 1, padding: '12px', borderRadius: '8px', border: '1px solid #ccc' }} />
                     </div>
 
                     <button type="submit" disabled={isUploading} style={{ padding: '16px', backgroundColor: isUploading ? '#ccc' : '#111', color: isUploading ? '#666' : '#00ffcc', fontWeight: '900', border: 'none', borderRadius: '10px', cursor: 'pointer' }}>{isUploading ? "☁️ UPLOADING..." : "⚡ PUBLISH TO LIVE STORE"}</button>
@@ -388,13 +474,7 @@ function App() {
         </div>
       )}
 
-      {pendingDeleteId && (
-        <div style={{ position: 'fixed', bottom: '25px', left: '50%', transform: 'translateX(-50%)', backgroundColor: '#111', color: '#fff', padding: '14px 22px', borderRadius: '14px', zIndex: 10000 }}>
-          <span style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>🗑️ Deleting... (Please don't refresh)</span>
-        </div>
-      )}
-
-      {toast.show && <div style={{ position: 'fixed', bottom: '30px', right: '30px', backgroundColor: '#111', color: '#00ffcc', padding: '14px 26px', borderRadius: '10px', fontWeight: '900', zIndex: 9999 }}>{toast.icon} {toast.text}</div>}
+      {toast.show && <div style={{ position: 'fixed', bottom: '30px', right: '30px', backgroundColor: '#111', color: '#00ffcc', padding: '14px 24px', borderRadius: '10px', fontWeight: '900', zIndex: 9999 }}>{toast.icon} {toast.text}</div>}
     </div>
   );
 }
